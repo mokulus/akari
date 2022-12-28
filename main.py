@@ -1,12 +1,17 @@
 import json
+import logging
 import multiprocessing as mp
 import random
-import sqlite3
+from collections import Counter
 from hashlib import sha256
 
+import sqlalchemy
 from flask import Flask
-from flask import request, jsonify
+from flask import request, jsonify, render_template
 from flask_httpauth import HTTPTokenAuth
+from sqlalchemy import Column, Integer, String, Sequence
+from sqlalchemy.orm import declarative_base
+from sqlalchemy.orm import sessionmaker
 
 import akari.constants
 from akari.generator import generate
@@ -19,27 +24,31 @@ tokens = {
     sha256(b"balbinka").hexdigest(): "balbinka",
 }
 
+Base = declarative_base()
+
 dblock = mp.Lock()
+engine = sqlalchemy.create_engine("sqlite:///puzzle.db?check_same_thread=False", echo=True)
+Base.metadata.create_all(engine)
+Session = sessionmaker(bind=engine)
+session = Session()
+
+
+class Puzzle(Base):
+    __tablename__ = "puzzles"
+    id = Column(Integer, Sequence("puzzle_id_seq"), primary_key=True)
+    width = Column(Integer)
+    height = Column(Integer)
+    difficulty = Column(String)
+    data = Column(String)
+
+    def __str__(self):
+        return str((self.id, self.width, self.height, self.difficulty, self.data))
 
 
 @auth.verify_token
 def verify_token(token):
     if token in tokens:
         return tokens[token]
-
-
-def puzzle_to_str(puzzle):
-    string = ""
-    for y in range(len(puzzle)):
-        for x in range(len(puzzle[y])):
-            if puzzle[y][x] == akari.constants.N:
-                string += "."
-            elif puzzle[y][x] == akari.constants.B:
-                string += "B"
-            else:
-                string += str(puzzle[y][x])
-        string += "\n"
-    return string
 
 
 def puzzle_to_dict(puzzle):
@@ -50,10 +59,6 @@ def puzzle_to_dict(puzzle):
         "numbers": list(range(4)),
         "board": puzzle,
     }
-
-
-def generate_puzzle_string(width, height):
-    return puzzle_to_str(generate(height, width, seed=random.randrange(0, 2 ** 32)))
 
 
 def difficulty_data(difficulty, width, height):
@@ -80,12 +85,12 @@ def generate_puzzle(width, height, difficulty):
 
 def generate_job(width, height, difficulty):
     key = str((width, height, difficulty))
-    print(f"generating {key}")
+    logging.info(f"generating {key}")
     puzzle = json.dumps(generate_puzzle(width, height, difficulty))
     with dblock:
-        cur.execute("INSERT INTO puzzles VALUES (?, ?, ?, ?)", (width, height, difficulty, puzzle))
-        cur.connection.commit()
-    print(f"DONE generating {key}")
+        session.add(Puzzle(width=width, height=height, difficulty=difficulty, data=puzzle))
+        session.commit()
+    logging.info(f"DONE generating {key}")
 
 
 @app.route("/json")
@@ -97,20 +102,18 @@ def request_json():
     if difficulty not in ["easy", "hard"]:
         difficulty = "medium"
     while True:
-        res = cur.execute("SELECT rowid, data FROM puzzles WHERE width = ? AND height = ? AND difficulty = ? LIMIT 1",
-                          (width, height, difficulty)).fetchone()
-        if res is None:
+        puzzle = session.query(Puzzle).filter(Puzzle.width == width, Puzzle.height == height,
+                                              Puzzle.difficulty == difficulty).first()
+        if puzzle is None:
             generate_job(width, height, difficulty)
         else:
-            rowid, data = res
-            puzzle = json.loads(data)
             with dblock:
-                cur.execute("DELETE FROM puzzles WHERE rowid = ?", (rowid,))
-                cur.connection.commit()
+                session.delete(puzzle)
+                session.commit()
             break
-    backlog = cur.execute("SELECT COUNT(*) FROM puzzles WHERE width = ? AND height = ? AND difficulty = ?",
-                          (width, height, difficulty)).fetchone()[0]
-    response = jsonify(puzzle_to_dict(puzzle))
+    backlog = session.query(Puzzle).filter(Puzzle.width == width, Puzzle.height == height,
+                                           Puzzle.difficulty == difficulty).count()
+    response = jsonify(puzzle_to_dict(json.loads(puzzle.data)))
     for _ in range(backlog, 5):
         mp.Process(target=generate_job, args=(width, height, difficulty), daemon=True).start()
     return response
@@ -119,42 +122,11 @@ def request_json():
 @app.route("/")
 @app.route("/index")
 def status():
-    text = "<table>"
-    text += "<tr>"
-    for h in ["width", "height", "difficulty", "n"]:
-        text += f"<th>{h}</th>"
-    text += "</tr>"
-    for w in range(5, 11):
-        for h in range(5, 11):
-            for d in ["easy", "medium", "hard"]:
-                n = cur.execute("SELECT COUNT(*) FROM puzzles WHERE width = ? AND height = ? AND difficulty = ?",
-                                (w, h, d)).fetchone()[0]
-                if n != 0:
-                    text += "<tr>"
-                    text += f"<td>{w}</td>"
-                    text += f"<td>{h}</td>"
-                    text += f"<td>{d}</td>"
-                    text += f"<td>{n}</td>"
-                    text += "</tr>"
-    return text
-
-
-@app.route("/solve", methods=["POST"])
-@auth.login_required
-def solve():
-    data = request.get_json(force=True)
-    if data is None:
-        raise ValueError("invalid json in /solve")
-    solution = z3solve(data["board"])
-    if solution is None:
-        raise ValueError("unsolvable board")
-    for x, y in solution:
-        data["board"][y][x] = akari.constants.L
-    return data
+    puzzles = session.query(Puzzle).all()
+    kinds = [(p.width, p.height, p.difficulty) for p in puzzles]
+    counter = Counter(kinds)
+    return render_template("index.html", puzzles=[dict(width=p[0], height=p[1], difficulty=p[2], count=count) for p, count in counter.items()])
 
 
 if __name__ == "__main__":
-    con = sqlite3.connect("puzzle.db", check_same_thread=False)
-    con.execute("CREATE TABLE IF NOT EXISTS puzzles (width INT, height INT, difficulty TEXT, data TEXT)")
-    cur = con.cursor()
     app.run(debug=True, port=8080)
