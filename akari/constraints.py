@@ -1,6 +1,6 @@
-from z3 import *
+import z3
 
-from constants import *
+import akari.constants
 
 
 def _validpos(puzzle, x, y):
@@ -13,12 +13,12 @@ def _constraints_wall(puzzle, constraints, bvars, x, y):
     n, constraint. From the neighbours of this wall exactly n neighbours need
     to be true, this function adds this constraint. """
     neighbours = []
-    for dx, dy in DIRS:
+    for dx, dy in akari.constants.DIRS:
         newx, newy = x + dx, y + dy
-        if _validpos(puzzle, newx, newy) and puzzle[newy][newx] == N:
+        if _validpos(puzzle, newx, newy) and puzzle[newy][newx] == akari.constants.N:
             neighbours.append((bvars[newx, newy], 1))
 
-    constraints.append(PbEq(neighbours, puzzle[y][x]))
+    constraints.append(z3.PbEq(neighbours, puzzle[y][x]))
 
 
 def _constraints_walls(puzzle, constraints, bvars, poss):
@@ -33,16 +33,16 @@ def _constraints_lines_atleastone(puzzle, constraints, bvars, poss):
     """ Add a constraint such that every cell is lit up. This is done by adding
     a constraint for every cell looking in all directions and demanding a light
     bulb in at least one of the directions (or at the place itself). """
-    for x, y in [(x, y) for (x, y) in poss if puzzle[y][x] == N]:
+    for x, y in [(x, y) for (x, y) in poss if puzzle[y][x] == akari.constants.N]:
         atleastone = [bvars[x, y]]  # make sure every cell is lit up
 
-        for dx, dy in DIRS:
+        for dx, dy in akari.constants.DIRS:
             newx, newy = x + dx, y + dy
-            while _validpos(puzzle, newx, newy) and puzzle[newy][newx] == N:
+            while _validpos(puzzle, newx, newy) and puzzle[newy][newx] == akari.constants.N:
                 atleastone.append(bvars[newx, newy])
                 newx, newy = newx + dx, newy + dy
 
-        constraints.append(Or(atleastone))
+        constraints.append(z3.Or(atleastone))
 
 
 def _constraints_lines_atmostone(puzzle, constraints, bvars, poss):
@@ -50,23 +50,23 @@ def _constraints_lines_atmostone(puzzle, constraints, bvars, poss):
     This is done by making sure that for every straight line (horizontal or
     vertical) on the board (interrupted by walls) there is never more than one
     light bulb on that line. """
-    for dx, dy in DIRS[:2]:
+    for dx, dy in akari.constants.DIRS[:2]:
         used = []
 
-        for x, y in [(x, y) for (x, y) in poss if puzzle[y][x] == N]:
+        for x, y in [(x, y) for (x, y) in poss if puzzle[y][x] == akari.constants.N]:
             if (x, y) in used:
                 continue
 
             atmostone = [(bvars[x, y], 1)]  # make sure no light bulbs cross
             newx, newy = x + dx, y + dy
 
-            while _validpos(puzzle, newx, newy) and puzzle[newy][newx] == N:
+            while _validpos(puzzle, newx, newy) and puzzle[newy][newx] == akari.constants.N:
                 atmostone.append((bvars[newx, newy], 1))
                 used.append((newx, newy))
                 newx, newy = newx + dx, newy + dy
 
             if len(atmostone) > 1:
-                constraints.append(PbLe(atmostone, 1))
+                constraints.append(z3.PbLe(atmostone, 1))
 
 
 def constraints_all(puzzle, poss, bvars):

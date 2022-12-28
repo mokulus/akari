@@ -1,8 +1,6 @@
 from z3 import *
-import time
 
-from constants import *
-from constraints import constraints_all
+from akari.constraints import constraints_all
 
 
 def _initialize(puzzle):

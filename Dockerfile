@@ -25,4 +25,4 @@ WORKDIR $APP_HOME/src
 CMD exec python3 -m gunicorn --bind :$PORT --workers 1 --threads 8 --timeout 0 main:app
 # CMD exec python3 -m gunicorn --bind :$PORT --timeout 0 main:app
 # CMD exec python3 akari.py
-# CMD flask --app src/main run
+# CMD flask --app akari/main run

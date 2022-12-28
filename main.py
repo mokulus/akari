@@ -1,23 +1,16 @@
+import json
+import multiprocessing as mp
 import random
+import sqlite3
 from hashlib import sha256
-from sys import maxsize
 
 from flask import Flask
 from flask import request, jsonify
-from flask.wrappers import Response
 from flask_httpauth import HTTPTokenAuth
-import threading
-import multiprocessing as mp
-import queue
-import sqlite3
 
-from pkg_resources import working_set
-import constants
-import json
-import os.path
-from collections import defaultdict
-from generator import generate
-from z3solver import z3solve
+import akari.constants
+from akari.generator import generate
+from akari.z3solver import z3solve
 
 app = Flask(__name__)
 auth = HTTPTokenAuth(scheme="Bearer")
@@ -27,8 +20,7 @@ tokens = {
 }
 
 dblock = mp.Lock()
-con = sqlite3.connect("puzzle.db", check_same_thread=False)
-cur = con.cursor()
+
 
 @auth.verify_token
 def verify_token(token):
@@ -40,9 +32,9 @@ def puzzle_to_str(puzzle):
     string = ""
     for y in range(len(puzzle)):
         for x in range(len(puzzle[y])):
-            if puzzle[y][x] == constants.N:
+            if puzzle[y][x] == akari.constants.N:
                 string += "."
-            elif puzzle[y][x] == constants.B:
+            elif puzzle[y][x] == akari.constants.B:
                 string += "B"
             else:
                 string += str(puzzle[y][x])
@@ -52,9 +44,9 @@ def puzzle_to_str(puzzle):
 
 def puzzle_to_dict(puzzle):
     return {
-        "empty": constants.N,
-        "barrier": constants.B,
-        "light": constants.L,
+        "empty": akari.constants.N,
+        "barrier": akari.constants.B,
+        "light": akari.constants.L,
         "numbers": list(range(4)),
         "board": puzzle,
     }
@@ -85,6 +77,7 @@ def generate_puzzle(width, height, difficulty):
         **difficulty_data(difficulty, width, height)
     )
 
+
 def generate_job(width, height, difficulty):
     key = str((width, height, difficulty))
     print(f"generating {key}")
@@ -104,7 +97,8 @@ def request_json():
     if difficulty not in ["easy", "hard"]:
         difficulty = "medium"
     while True:
-        res = cur.execute("SELECT rowid, data FROM puzzles WHERE width = ? AND height = ? AND difficulty = ? LIMIT 1", (width, height, difficulty)).fetchone()
+        res = cur.execute("SELECT rowid, data FROM puzzles WHERE width = ? AND height = ? AND difficulty = ? LIMIT 1",
+                          (width, height, difficulty)).fetchone()
         if res is None:
             generate_job(width, height, difficulty)
         else:
@@ -114,11 +108,13 @@ def request_json():
                 cur.execute("DELETE FROM puzzles WHERE rowid = ?", (rowid,))
                 cur.connection.commit()
             break
-    backlog = cur.execute("SELECT COUNT(*) FROM puzzles WHERE width = ? AND height = ? AND difficulty = ?", (width, height, difficulty)).fetchone()[0]
+    backlog = cur.execute("SELECT COUNT(*) FROM puzzles WHERE width = ? AND height = ? AND difficulty = ?",
+                          (width, height, difficulty)).fetchone()[0]
     response = jsonify(puzzle_to_dict(puzzle))
     for _ in range(backlog, 5):
         mp.Process(target=generate_job, args=(width, height, difficulty), daemon=True).start()
     return response
+
 
 @app.route("/")
 @app.route("/index")
@@ -131,7 +127,8 @@ def status():
     for w in range(5, 11):
         for h in range(5, 11):
             for d in ["easy", "medium", "hard"]:
-                n = cur.execute("SELECT COUNT(*) FROM puzzles WHERE width = ? AND height = ? AND difficulty = ?", (w, h, d)).fetchone()[0]
+                n = cur.execute("SELECT COUNT(*) FROM puzzles WHERE width = ? AND height = ? AND difficulty = ?",
+                                (w, h, d)).fetchone()[0]
                 if n != 0:
                     text += "<tr>"
                     text += f"<td>{w}</td>"
@@ -141,21 +138,23 @@ def status():
                     text += "</tr>"
     return text
 
+
 @app.route("/solve", methods=["POST"])
 @auth.login_required
 def solve():
-    json = request.get_json(force=True)
-    if json is None:
+    data = request.get_json(force=True)
+    if data is None:
         raise ValueError("invalid json in /solve")
-    solution = z3solve(json["board"])
+    solution = z3solve(data["board"])
     if solution is None:
         raise ValueError("unsolvable board")
     for x, y in solution:
-        json["board"][y][x] = constants.L
-    return json
+        data["board"][y][x] = akari.constants.L
+    return data
 
 
 if __name__ == "__main__":
-    con = sqlite3.connect("puzzle.db")
-    # cur = con.execute("CREATE TABLE puzzles (width, height, difficulty, data)")
-    app.run(debug=True)
+    con = sqlite3.connect("puzzle.db", check_same_thread=False)
+    con.execute("CREATE TABLE IF NOT EXISTS puzzles (width INT, height INT, difficulty TEXT, data TEXT)")
+    cur = con.cursor()
+    app.run(debug=True, port=8080)
